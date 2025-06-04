@@ -1,4 +1,4 @@
-// Variables globales --con worker y ajustado a cuadro
+// Variables globales
 const video = document.getElementById("webcam");
 const liveView = document.getElementById("liveView");
 const demosSection = document.getElementById("demos");
@@ -7,32 +7,38 @@ const cameraOptions = document.querySelector('.video-options>select');
 const enableWebcamButton = document.getElementById("webcamButton");
 const hideCameraBtn = document.getElementById("hide-camera");
 const canvas = document.getElementById("canvas");
+const imageContainer = document.getElementById("image-container");
 const ctx = canvas.getContext('2d');
 const statusDisplay = document.getElementById("status");
+const tempCanvas = document.createElement('canvas');
+tempCanvas.id = 'id_canvas';
+document.body.appendChild(tempCanvas);
 
 let localStream = null;
-let modelWorker = null;
+let tfliteModel = null;
 let stopModel = false;
 let modelLoaded = false;
-let frameId = 0;
 
-// Configuración del modelo
+// Configuración del modelo actualizada
 const MODEL_CONFIG = {
-  inputSize: [320, 320],
-  scoreThreshold: 0.53,
-  maxResults: 10
+  inputSize: [320, 320],      // Tamaño de entrada esperado por el modelo
+  scoreThreshold: 0.9,       // Umbral más alto para mayor precisión
+  maxResults: 10,             // Máximo número de detecciones
+  outputFormat: 'auto',       // Formato de salida automático
+  iouThreshold: 0.5           // Umbral de supresión no máxima
 };
 
-// Mapeo de clases
+// Mapeo de clases actualizado (verificar con el nuevo modelo)
 const CLASS_MAPPING = {
   0: 'INE_Frente',
-  1: 'INE_Reverso'
+  1: 'INE_Reverso',
+  // Agregar más clases si el modelo detecta otros tipos
 };
 
 // Inicialización
 document.addEventListener('DOMContentLoaded', async () => {
   await setupCameraSelection();
-  await initModelWorker();
+  await loadModel();
 });
 
 // 1. Configurar selección de cámara
@@ -48,54 +54,28 @@ async function setupCameraSelection() {
   }
 }
 
-// 2. Inicializar el Web Worker
-async function initModelWorker() {
-  modelWorker = new Worker('./worker-qf16.js');
-  
-// En tu función initModelWorker(), actualiza el modelWorker.onmessage:
-
-modelWorker.onmessage = (e) => {
-  const { event, data, id, debugInfo } = e.data;
-  
-  if (event === 'model-ready') {
+// 2. Cargar modelo TFLite actualizado
+async function loadModel() {
+  try {
+    const modelPath = './assets/tflite/ssd_mobilenetv2_lite_320x320_docs_idmex_v3_qf16_metadata.tflite';
+    
+    // Configuración actualizada para modelo cuantizado
+    tfliteModel = await tflite.loadTFLiteModel(modelPath, {
+      experimentalNormalize: false,
+      inputType: 'uint8',      // Modelo cuantizado usa uint8
+      outputType: 'float32',   // Las salidas suelen ser float32
+      numThreads: 4            // Usar más hilos para mejor rendimiento
+    });
+    
+    console.log("Nuevo modelo cargado exitosamente:", tfliteModel);
     modelLoaded = true;
     demosSection.classList.remove("invisible");
     enableWebcamButton.disabled = false;
-    updateStatus("Modelo cargado. Haz clic en 'Activar Cámara'.");
-  } 
-  else if (event === 'immediate-detection') {
-    // 🚨 MOSTRAR DETECCIÓN INMEDIATA EN CONSOLA PRINCIPAL
-    console.log('🎯'.repeat(10));
-    console.log(`🆔 IDENTIFICACIÓN DETECTADA EN TIEMPO REAL:`);
-    console.log(`   📋 Tipo: Clase ${data.class} (${data.className})`);
-    console.log(`   📊 Confianza: ${data.confidence}%`);
-    console.log(`   ⏰ Tiempo: ${data.timestamp}`);
-    console.log('🎯'.repeat(10));
-    
-    // También mostrar en el status de la UI
-    updateStatus(`🎯 ${data.className} detectado (${data.confidence}%)`);
+    updateStatus("Modelo v3 cargado. Haz clic en 'Activar Cámara'.");
+  } catch (error) {
+    console.error("Error al cargar el nuevo modelo:", error);
+    updateStatus("Error al cargar el modelo v3. Verifica la consola.", true);
   }
-  else if (event === 'prediction' && id === frameId) {
-    const validPredictions = data.filter(pred => pred.score >= MODEL_CONFIG.scoreThreshold);
-    renderDetections(validPredictions);
-    logDetectionDetails(validPredictions);
-    
-    // Debug: Mostrar shapes de los tensores
-    if (debugInfo) {
-      console.log("📊 Shapes de salida:", debugInfo.outputShapes);
-    }
-  }
-  else if (event === 'error') {
-    console.error("Error en el worker:", data);
-    updateStatus("Error en el modelo. Ver consola para detalles.", true);
-  }
-};
-  
-  // Inicializar el modelo en el worker
-  modelWorker.postMessage({
-    event: 'init',
-    modelPath: './assets/tflite/ssd_mobilenetv2_lite_320x320_docs_idmex_v3_qf16_metadata.tflite'
-  });
 }
 
 // 3. Activar la cámara
@@ -122,6 +102,7 @@ async function enableCam() {
     enableWebcamButton.classList.add("removed");
     hideCameraBtn.classList.remove("removed");
     optionsDiv.classList.add("removed");
+    demosSection.classList.remove("invisible");
 
     await new Promise(resolve => {
       video.onloadeddata = () => {
@@ -141,87 +122,143 @@ async function enableCam() {
   }
 }
 
-// 4. Preprocesar frame
+// 4. Procesar cuadro para modelo (optimizado para el nuevo modelo)
 function preprocessFrame(videoElement) {
-  const canvasTemp = document.createElement('canvas');
-  canvasTemp.width = MODEL_CONFIG.inputSize[0];
-  canvasTemp.height = MODEL_CONFIG.inputSize[1];
-  const ctxTemp = canvasTemp.getContext('2d');
-  ctxTemp.drawImage(videoElement, 0, 0, canvasTemp.width, canvasTemp.height);
+  const [targetWidth, targetHeight] = MODEL_CONFIG.inputSize;
+  const tempCtx = tempCanvas.getContext('2d');
   
-  const imageData = ctxTemp.getImageData(0, 0, canvasTemp.width, canvasTemp.height);
-  return {
-    width: canvasTemp.width,
-    height: canvasTemp.height,
-    data: imageData.data
-  };
-}
+  // Configurar canvas temporal
+  tempCanvas.width = targetWidth;
+  tempCanvas.height = targetHeight;
+  
+  // Limpiar y rellenar con negro
+  tempCtx.fillStyle = 'black';
+  tempCtx.fillRect(0, 0, targetWidth, targetHeight);
 
-// 5. Bucle de predicción
-async function predictWebcam() {
-  if (stopModel) return;
+  // Calcular escala manteniendo relación de aspecto
+  const videoRatio = videoElement.videoWidth / videoElement.videoHeight;
+  const targetRatio = targetWidth / targetHeight;
   
-  frameId++;
-  const currentFrameId = frameId;
+  let drawWidth, drawHeight, offsetX, offsetY;
   
-  try {
-    const frameData = preprocessFrame(video);
-    
-    // Enviar frame al worker (con transferencia de buffer para mejor rendimiento)
-    modelWorker.postMessage({
-      event: 'predict',
-      frame: frameData,
-      id: currentFrameId
-    }, [frameData.data.buffer]);
-    
-    // Control de FPS (~10fps)
-    setTimeout(predictWebcam, 100);
-    
-  } catch (error) {
-    console.error("Error en predictWebcam:", error);
-    updateStatus("Error durante la predicción. Ver consola para detalles.", true);
-    setTimeout(predictWebcam, 200); // Reintentar
+  if (videoRatio > targetRatio) {
+    drawHeight = targetHeight;
+    drawWidth = videoElement.videoWidth * (targetHeight / videoElement.videoHeight);
+    offsetX = (targetWidth - drawWidth) / 2;
+    offsetY = 0;
+  } else {
+    drawWidth = targetWidth;
+    drawHeight = videoElement.videoHeight * (targetWidth / videoElement.videoWidth);
+    offsetX = 0;
+    offsetY = (targetHeight - drawHeight) / 2;
   }
-}
 
-// 6. Mostrar detecciones en consola
-function logDetectionDetails(predictions) {
-  console.log(`📊 Detecciones: ${predictions.length}`);
-  predictions.forEach((det, i) => {
-    const className = CLASS_MAPPING[det.class] || `Clase ${det.class}`;
-    console.groupCollapsed(`Detección ${i+1}: ${className} (${(det.score * 100).toFixed(2)}%)`);
-    console.log("Clase ID:", det.class);
-    console.log("Precisión:", det.score);
-    console.log("Coordenadas (normalizadas):", det.bbox);
-    
-    // Calcular coordenadas en píxeles
-    const [ymin, xmin, ymax, xmax] = det.bbox;
-    const pxCoords = {
-      x: Math.round(xmin * canvas.width),
-      y: Math.round(ymin * canvas.height),
-      width: Math.round((xmax - xmin) * canvas.width),
-      height: Math.round((ymax - ymin) * canvas.height)
-    };
-    console.log("Coordenadas (píxeles):", pxCoords);
-    console.groupEnd();
+  // Dibujar el video escalado y centrado
+  tempCtx.drawImage(videoElement, offsetX, offsetY, drawWidth, drawHeight);
+
+  return tf.tidy(() => {
+    const tensor = tf.browser.fromPixels(tempCanvas); // tf.Tensor3D uint8
+    return tensor.expandDims(0); // [1, height, width, 3]
   });
 }
 
-// 7. Dibujar área guía
-function drawGuideArea() {
-  const guideWidth = canvas.width * 0.6;
-  const guideHeight = canvas.height * 0.4;
-  const guideX = (canvas.width - guideWidth) / 2;
-  const guideY = (canvas.height - guideHeight) / 2;
 
-  ctx.strokeStyle = 'yellow';
-  ctx.lineWidth = 3;
-  ctx.setLineDash([5, 5]);
-  ctx.strokeRect(guideX, guideY, guideWidth, guideHeight);
-  ctx.setLineDash([]);
+// Función para aplicar supresión no máxima (NMS)
+function applyNMS(predictions, iouThreshold) {
+  const selected = [];
+  const active = new Array(predictions.length).fill(true);
+  
+  for (let i = 0; i < predictions.length; i++) {
+    if (active[i]) {
+      selected.push(predictions[i]);
+      
+      for (let j = i + 1; j < predictions.length; j++) {
+        if (active[j]) {
+          const iou = calculateIOU(predictions[i].bbox, predictions[j].bbox);
+          if (iou > iouThreshold) {
+            active[j] = false;
+          }
+        }
+      }
+    }
+  }
+  
+  return selected;
 }
 
-// 8. Renderizar detecciones en el canvas
+// Función para calcular Intersección sobre Unión (IoU)
+function calculateIOU(box1, box2) {
+  const [ymin1, xmin1, ymax1, xmax1] = box1;
+  const [ymin2, xmin2, ymax2, xmax2] = box2;
+  
+  const xLeft = Math.max(xmin1, xmin2);
+  const yTop = Math.max(ymin1, ymin2);
+  const xRight = Math.min(xmax1, xmax2);
+  const yBottom = Math.min(ymax1, ymax2);
+  
+  if (xRight < xLeft || yBottom < yTop) {
+    return 0.0;
+  }
+  
+  const intersectionArea = (xRight - xLeft) * (yBottom - yTop);
+  const box1Area = (xmax1 - xmin1) * (ymax1 - ymin1);
+  const box2Area = (xmax2 - xmin2) * (ymax2 - ymin2);
+  
+  return intersectionArea / (box1Area + box2Area - intersectionArea);
+}
+
+async function processOutput(outputTensors) {
+  try {
+    console.log("Estructura completa de outputTensors:");
+    Object.keys(outputTensors).forEach(key => {
+      console.log(`Tensor ${key}:`, outputTensors[key]);
+    });
+
+    // Asignación basada en los logs
+    const numDetections = 10; // Fijo según tus logs
+    const classesData = await outputTensors['StatefulPartitionedCall:1'].array();
+    const scoresData = await outputTensors['StatefulPartitionedCall:2'].array();
+    const boxesData = await outputTensors['StatefulPartitionedCall:3'].array();
+
+    console.log("Datos crudos - Clases:", classesData[0]);
+    console.log("Datos crudos - Scores:", scoresData[0]);
+    console.log("Datos crudos - Boxes:", boxesData[0]);
+
+    const predictions = [];
+    
+    for (let i = 0; i < numDetections; i++) {
+      const score = scoresData[0][i];
+      const classId = classesData[0][i];
+      const bbox = boxesData[0][i];
+
+      // Solo para debugging - mostrar todas las detecciones sin filtro
+      console.log(`Detección ${i}: Clase=${classId}, Score=${score}, BBox=${bbox}`);
+
+      if (score >= MODEL_CONFIG.scoreThreshold) {
+        predictions.push({
+          bbox: [bbox[0], bbox[1], bbox[2], bbox[3]], // [ymin, xmin, ymax, xmax]
+          score: score,
+          class: classId
+        });
+      }
+    }
+
+    console.log('Detecciones antes de NMS:', predictions);
+    
+    // Ordenar y aplicar NMS
+    predictions.sort((a, b) => b.score - a.score);
+    const nmsPredictions = applyNMS(predictions, MODEL_CONFIG.iouThreshold);
+
+    console.log('Detecciones después de NMS:', nmsPredictions);
+    return nmsPredictions;
+  } catch (error) {
+    console.error("Error en processOutput:", error);
+    return [];
+  }
+}
+
+// 6. Renderizar detecciones (versión mejorada para debugging)
+// 6. Renderizar detecciones (versión mejorada similar al segundo ejemplo)
 function renderDetections(predictions) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawGuideArea();
@@ -233,63 +270,96 @@ function renderDetections(predictions) {
     return;
   }
 
-  let detectedINEFrente = false;
+  const videoWidth = canvas.width;
+  const videoHeight = canvas.height;
+  let bestDetection = null;
+  let bestScore = 0;
 
+  // Encontrar la mejor detección
+  predictions.forEach(pred => {
+    if (pred.score > bestScore) {
+      bestScore = pred.score;
+      bestDetection = pred;
+    }
+  });
+
+  // Dibujar todas las detecciones
   predictions.forEach(pred => {
     const [ymin, xmin, ymax, xmax] = pred.bbox;
-    const x = xmin * canvas.width;
-    const y = ymin * canvas.height;
-    const width = (xmax - xmin) * canvas.width;
-    const height = (ymax - ymin) * canvas.height;
+    const x = xmin * videoWidth;
+    const y = ymin * videoHeight;
+    const width = (xmax - xmin) * videoWidth;
+    const height = (ymax - ymin) * videoHeight;
 
     if ([x, y, width, height].some(isNaN)) return;
 
-    const labelName = CLASS_MAPPING[pred.class] || 'Desconocido';
+    const labelName = CLASS_MAPPING[pred.class] || `Clase ${pred.class}`;
     const label = `${labelName} ${(pred.score * 100).toFixed(1)}%`;
-    const color = labelName === 'INE_Frente' ? '#FF0000' : '#0000FF';
+    const isBest = pred === bestDetection;
+    const color = isBest ? '#00FF00' : (labelName === 'INE_Frente' ? '#FF0000' : '#0000FF');
 
     // Dibujar cuadro de detección
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = isBest ? 4 : 2;
     ctx.strokeRect(x, y, width, height);
 
-    // Dibujar etiqueta
-    const textWidth = ctx.measureText(label).width;
+    // Dibujar fondo para la etiqueta
     ctx.fillStyle = color;
+    const textWidth = ctx.measureText(label).width;
     ctx.fillRect(x, y > 10 ? y - 20 : y, textWidth + 10, 20);
+    
+    // Dibujar texto
     ctx.fillStyle = "#FFFFFF";
     ctx.font = '14px Arial';
     ctx.fillText(label, x + 5, y > 10 ? y - 5 : y + 15);
 
-    // Verificar INE_Frente con score > 0.7
-    if (labelName === 'INE_Frente' && pred.score > 0.58) {  // Threshold más bajo para QF16
-       detectedINEFrente = true;
-     }
+    // Verificar si está en el área guía
+    if (isBest && isBoxInsideGuide(x, y, width, height)) {
+      if (labelName === 'INE_Frente' && pred.score > 0.7) {
+        updateStatus("INE_Frente detectada correctamente dentro del área. Cámara detenida.");
+        hideCam();
+      }
+    }
   });
 
-  if (detectedINEFrente) {
-    updateStatus("✅ INE_Frente detectada correctamente. Cámara detenida.");
-    hideCam();
-  }
+  updateStatus(`Detecciones: ${predictions.length} | Mejor: ${bestDetection ? CLASS_MAPPING[bestDetection.class] : 'N/A'} (${bestScore.toFixed(2)})`);
+}
+// Dibujar área guía
+function drawGuideArea() {
+  const guideWidthRatio = 0.6;
+  const guideHeightRatio = 0.4;
+
+  const guideWidth = canvas.width * guideWidthRatio;
+  const guideHeight = canvas.height * guideHeightRatio;
+  const guideX = (canvas.width - guideWidth) / 2;
+  const guideY = (canvas.height - guideHeight) / 2;
+
+  ctx.strokeStyle = 'yellow';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 5]);
+  ctx.strokeRect(guideX, guideY, guideWidth, guideHeight);
+  ctx.setLineDash([]);
 }
 
-// 9. Ocultar cámara
-function hideCam() {
-  if (!localStream) return;
-  
-  localStream.getTracks().forEach(track => track.stop());
-  localStream = null;
-  video.srcObject = null;
+// Verificar si está dentro del área guía
+function isBoxInsideGuide(x, y, width, height) {
+  const guideWidthRatio = 0.6;
+  const guideHeightRatio = 0.4;
 
-  enableWebcamButton.classList.remove("removed");
-  hideCameraBtn.classList.add("removed");
-  optionsDiv.classList.remove("removed");
-  stopModel = true;
-  
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const guideWidth = canvas.width * guideWidthRatio;
+  const guideHeight = canvas.height * guideHeightRatio;
+  const guideX = (canvas.width - guideWidth) / 2;
+  const guideY = (canvas.height - guideHeight) / 2;
+
+  return (
+    x >= guideX &&
+    y >= guideY &&
+    x + width <= guideX + guideWidth &&
+    y + height <= guideY + guideHeight
+  );
 }
 
-// Helper: Actualizar estado UI
+// Resto de funciones
 function updateStatus(message, isError = false) {
   if (statusDisplay) {
     statusDisplay.textContent = message;
@@ -298,7 +368,23 @@ function updateStatus(message, isError = false) {
   console.log(message);
 }
 
-// Helper: Manejo de errores
+function hideCam() {
+  if (!localStream) return;
+  localStream.getTracks().forEach(track => track.stop());
+  localStream = null;
+  video.srcObject = null;
+
+  enableWebcamButton.classList.remove("removed");
+  hideCameraBtn.classList.add("removed");
+  optionsDiv.classList.remove("removed");
+  stopModel = true;
+  clearDetections();
+}
+
+function clearDetections() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
 function handleCameraError(error) {
   let errorMessage = "Error de cámara: ";
   if (error.name === 'NotAllowedError') {
@@ -309,6 +395,41 @@ function handleCameraError(error) {
     errorMessage += error.message || error.toString();
   }
   updateStatus(errorMessage, true);
+}
+
+// Bucle de predicción optimizado
+async function predictWebcam() {
+  if (!tfliteModel || stopModel) return;
+
+  try {
+    const startTime = performance.now();
+    const inputTensor = preprocessFrame(video);
+    
+    // Realizar predicción
+    const outputTensors = await tfliteModel.predict(inputTensor);
+    inputTensor.dispose();
+    
+    // Procesar resultados
+    const predictions = await processOutput(outputTensors);
+    
+    // Renderizar
+    renderDetections(predictions);
+    
+    // Liberar tensores
+    Object.values(outputTensors).forEach(t => t.dispose());
+    
+    // Calcular FPS
+    const endTime = performance.now();
+    const fps = 1000 / (endTime - startTime);
+    console.log(`FPS: ${fps.toFixed(1)}`);
+    
+    // Continuar el bucle
+    requestAnimationFrame(predictWebcam);
+
+  } catch (error) {
+    console.error("Error en predictWebcam:", error);
+    updateStatus("Error durante la predicción. Ver consola para detalles.", true);
+  }
 }
 
 // Event listeners
