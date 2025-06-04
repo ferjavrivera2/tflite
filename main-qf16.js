@@ -19,7 +19,7 @@ let frameId = 0;
 // Configuración del modelo
 const MODEL_CONFIG = {
   inputSize: [320, 320],
-  scoreThreshold: 0.53,
+  scoreThreshold: 0.5,
   maxResults: 10
 };
 
@@ -52,44 +52,30 @@ async function setupCameraSelection() {
 async function initModelWorker() {
   modelWorker = new Worker('./worker-qf16.js');
   
-// En tu función initModelWorker(), actualiza el modelWorker.onmessage:
-
-modelWorker.onmessage = (e) => {
-  const { event, data, id, debugInfo } = e.data;
-  
-  if (event === 'model-ready') {
-    modelLoaded = true;
-    demosSection.classList.remove("invisible");
-    enableWebcamButton.disabled = false;
-    updateStatus("Modelo cargado. Haz clic en 'Activar Cámara'.");
-  } 
-  else if (event === 'immediate-detection') {
-    // 🚨 MOSTRAR DETECCIÓN INMEDIATA EN CONSOLA PRINCIPAL
-    console.log('🎯'.repeat(10));
-    console.log(`🆔 IDENTIFICACIÓN DETECTADA EN TIEMPO REAL:`);
-    console.log(`   📋 Tipo: Clase ${data.class} (${data.className})`);
-    console.log(`   📊 Confianza: ${data.confidence}%`);
-    console.log(`   ⏰ Tiempo: ${data.timestamp}`);
-    console.log('🎯'.repeat(10));
+  modelWorker.onmessage = (e) => {
+    const { event, data, id, debugInfo } = e.data;
     
-    // También mostrar en el status de la UI
-    updateStatus(`🎯 ${data.className} detectado (${data.confidence}%)`);
-  }
-  else if (event === 'prediction' && id === frameId) {
-    const validPredictions = data.filter(pred => pred.score >= MODEL_CONFIG.scoreThreshold);
-    renderDetections(validPredictions);
-    logDetectionDetails(validPredictions);
-    
-    // Debug: Mostrar shapes de los tensores
-    if (debugInfo) {
-      console.log("📊 Shapes de salida:", debugInfo.outputShapes);
+    if (event === 'model-ready') {
+      modelLoaded = true;
+      demosSection.classList.remove("invisible");
+      enableWebcamButton.disabled = false;
+      updateStatus("Modelo cargado. Haz clic en 'Activar Cámara'.");
+    } 
+    else if (event === 'prediction' && id === frameId) {
+      const validPredictions = data.filter(pred => pred.score >= MODEL_CONFIG.scoreThreshold);
+      renderDetections(validPredictions);
+      logDetectionDetails(validPredictions);
+      
+      // Debug: Mostrar shapes de los tensores
+      if (debugInfo) {
+        console.log("📊 Shapes de salida:", debugInfo.outputShapes);
+      }
     }
-  }
-  else if (event === 'error') {
-    console.error("Error en el worker:", data);
-    updateStatus("Error en el modelo. Ver consola para detalles.", true);
-  }
-};
+    else if (event === 'error') {
+      console.error("Error en el worker:", data);
+      updateStatus("Error en el modelo. Ver consola para detalles.", true);
+    }
+  };
   
   // Inicializar el modelo en el worker
   modelWorker.postMessage({
@@ -262,9 +248,9 @@ function renderDetections(predictions) {
     ctx.fillText(label, x + 5, y > 10 ? y - 5 : y + 15);
 
     // Verificar INE_Frente con score > 0.7
-    if (labelName === 'INE_Frente' && pred.score > 0.58) {  // Threshold más bajo para QF16
-       detectedINEFrente = true;
-     }
+    if (labelName === 'INE_Frente' && pred.score > 0.7) {
+      detectedINEFrente = true;
+    }
   });
 
   if (detectedINEFrente) {
