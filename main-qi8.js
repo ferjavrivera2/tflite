@@ -50,7 +50,7 @@ async function setupCameraSelection() {
 
 // 2. Inicializar el Web Worker
 async function initModelWorker() {
-  modelWorker = new Worker('./worker.js');
+  modelWorker = new Worker('./worker-qi8.js');
   
   modelWorker.onmessage = (e) => {
     const { event, data, id, debugInfo } = e.data;
@@ -80,7 +80,7 @@ async function initModelWorker() {
   // Inicializar el modelo en el worker
   modelWorker.postMessage({
     event: 'init',
-    modelPath: './assets/tflite/ssd_mobilenetv2_lite_320x320_docs_idmex_v3_qf16_metadata.tflite'
+    modelPath: './assets/tflite/ssd_mobilenetv2_lite_320x320_docs_idmex_v3_qi8_metadata.tflite'
   });
 }
 

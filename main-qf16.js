@@ -1,4 +1,4 @@
-// Variables globales
+// Variables globales --con worker y ajustado a cuadro
 const video = document.getElementById("webcam");
 const liveView = document.getElementById("liveView");
 const demosSection = document.getElementById("demos");
@@ -9,9 +9,6 @@ const hideCameraBtn = document.getElementById("hide-camera");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext('2d');
 const statusDisplay = document.getElementById("status");
-const tempCanvas = document.createElement('canvas');
-tempCanvas.id = 'id_canvas';
-document.body.appendChild(tempCanvas);
 
 let localStream = null;
 let modelWorker = null;
@@ -19,12 +16,11 @@ let stopModel = false;
 let modelLoaded = false;
 let frameId = 0;
 
-// Configuración del modelo actualizada
+// Configuración del modelo
 const MODEL_CONFIG = {
   inputSize: [320, 320],
-  scoreThreshold: 0.65,
-  maxResults: 10,
-  iouThreshold: 0.5
+  scoreThreshold: 0.53,
+  maxResults: 10
 };
 
 // Mapeo de clases
@@ -56,35 +52,49 @@ async function setupCameraSelection() {
 async function initModelWorker() {
   modelWorker = new Worker('./worker-qf16.js');
   
-  modelWorker.onmessage = (e) => {
-    const { event, data, id, debugInfo } = e.data;
+// En tu función initModelWorker(), actualiza el modelWorker.onmessage:
+
+modelWorker.onmessage = (e) => {
+  const { event, data, id, debugInfo } = e.data;
+  
+  if (event === 'model-ready') {
+    modelLoaded = true;
+    demosSection.classList.remove("invisible");
+    enableWebcamButton.disabled = false;
+    updateStatus("Modelo cargado. Haz clic en 'Activar Cámara'.");
+  } 
+  else if (event === 'immediate-detection') {
+    // 🚨 MOSTRAR DETECCIÓN INMEDIATA EN CONSOLA PRINCIPAL
+    console.log('🎯'.repeat(10));
+    console.log(`🆔 IDENTIFICACIÓN DETECTADA EN TIEMPO REAL:`);
+    console.log(`   📋 Tipo: Clase ${data.class} (${data.className})`);
+    console.log(`   📊 Confianza: ${data.confidence}%`);
+    console.log(`   ⏰ Tiempo: ${data.timestamp}`);
+    console.log('🎯'.repeat(10));
     
-    if (event === 'model-ready') {
-      modelLoaded = true;
-      demosSection.classList.remove("invisible");
-      enableWebcamButton.disabled = false;
-      updateStatus("Modelo QF16 cargado. Haz clic en 'Activar Cámara'.");
-    } 
-    else if (event === 'prediction' && id === frameId) {
-      renderDetections(data);
-      logDetectionDetails(data);
-      
-      if (debugInfo) {
-        console.log("📊 Debug info:", debugInfo);
-      }
+    // También mostrar en el status de la UI
+    updateStatus(`🎯 ${data.className} detectado (${data.confidence}%)`);
+  }
+  else if (event === 'prediction' && id === frameId) {
+    const validPredictions = data.filter(pred => pred.score >= MODEL_CONFIG.scoreThreshold);
+    renderDetections(validPredictions);
+    logDetectionDetails(validPredictions);
+    
+    // Debug: Mostrar shapes de los tensores
+    if (debugInfo) {
+      console.log("📊 Shapes de salida:", debugInfo.outputShapes);
     }
-    else if (event === 'error') {
-      console.error("Error en el worker:", data);
-      updateStatus("Error en el modelo. Ver consola para detalles.", true);
-    }
-  };
+  }
+  else if (event === 'error') {
+    console.error("Error en el worker:", data);
+    updateStatus("Error en el modelo. Ver consola para detalles.", true);
+  }
+};
   
   // Inicializar el modelo en el worker
   modelWorker.postMessage({
     event: 'init',
-    modelPath: './assets/tflite/ssd_mobilenetv2_lite_320x320_docs_idmex_v3_qf16_metadata.tflite',
-    config: MODEL_CONFIG,
-    classMapping: CLASS_MAPPING
+    modelPath: './assets/tflite/ssd_mobilenetv2_lite_320x320_docs_idmex_v3_qf16_metadata.tflite'
   });
 }
 
@@ -131,44 +141,18 @@ async function enableCam() {
   }
 }
 
-// 4. Preprocesar frame para el worker
-function preprocessFrameForWorker(videoElement) {
-  const [targetWidth, targetHeight] = MODEL_CONFIG.inputSize;
-  const tempCtx = tempCanvas.getContext('2d');
+// 4. Preprocesar frame
+function preprocessFrame(videoElement) {
+  const canvasTemp = document.createElement('canvas');
+  canvasTemp.width = MODEL_CONFIG.inputSize[0];
+  canvasTemp.height = MODEL_CONFIG.inputSize[1];
+  const ctxTemp = canvasTemp.getContext('2d');
+  ctxTemp.drawImage(videoElement, 0, 0, canvasTemp.width, canvasTemp.height);
   
-  tempCanvas.width = targetWidth;
-  tempCanvas.height = targetHeight;
-  
-  // Limpiar y rellenar con negro
-  tempCtx.fillStyle = 'black';
-  tempCtx.fillRect(0, 0, targetWidth, targetHeight);
-
-  // Calcular escala manteniendo relación de aspecto
-  const videoRatio = videoElement.videoWidth / videoElement.videoHeight;
-  const targetRatio = targetWidth / targetHeight;
-  
-  let drawWidth, drawHeight, offsetX, offsetY;
-  
-  if (videoRatio > targetRatio) {
-    drawHeight = targetHeight;
-    drawWidth = videoElement.videoWidth * (targetHeight / videoElement.videoHeight);
-    offsetX = (targetWidth - drawWidth) / 2;
-    offsetY = 0;
-  } else {
-    drawWidth = targetWidth;
-    drawHeight = videoElement.videoHeight * (targetWidth / videoElement.videoWidth);
-    offsetX = 0;
-    offsetY = (targetHeight - drawHeight) / 2;
-  }
-
-  // Dibujar el video escalado y centrado
-  tempCtx.drawImage(videoElement, offsetX, offsetY, drawWidth, drawHeight);
-
-  // Obtener ImageData y transferir el buffer para mejor rendimiento
-  const imageData = tempCtx.getImageData(0, 0, targetWidth, targetHeight);
+  const imageData = ctxTemp.getImageData(0, 0, canvasTemp.width, canvasTemp.height);
   return {
-    width: targetWidth,
-    height: targetHeight,
+    width: canvasTemp.width,
+    height: canvasTemp.height,
     data: imageData.data
   };
 }
@@ -181,9 +165,9 @@ async function predictWebcam() {
   const currentFrameId = frameId;
   
   try {
-    const frameData = preprocessFrameForWorker(video);
+    const frameData = preprocessFrame(video);
     
-    // Enviar frame al worker (con transferencia de buffer)
+    // Enviar frame al worker (con transferencia de buffer para mejor rendimiento)
     modelWorker.postMessage({
       event: 'predict',
       frame: frameData,
@@ -250,16 +234,6 @@ function renderDetections(predictions) {
   }
 
   let detectedINEFrente = false;
-  let bestDetection = null;
-  let bestScore = 0;
-
-  // Encontrar la mejor detección
-  predictions.forEach(pred => {
-    if (pred.score > bestScore) {
-      bestScore = pred.score;
-      bestDetection = pred;
-    }
-  });
 
   predictions.forEach(pred => {
     const [ymin, xmin, ymax, xmax] = pred.bbox;
@@ -270,14 +244,13 @@ function renderDetections(predictions) {
 
     if ([x, y, width, height].some(isNaN)) return;
 
-    const labelName = CLASS_MAPPING[pred.class] || `Clase ${pred.class}`;
+    const labelName = CLASS_MAPPING[pred.class] || 'Desconocido';
     const label = `${labelName} ${(pred.score * 100).toFixed(1)}%`;
-    const isBest = pred === bestDetection;
-    const color = isBest ? '#00FF00' : (labelName === 'INE_Frente' ? '#FF0000' : '#0000FF');
+    const color = labelName === 'INE_Frente' ? '#FF0000' : '#0000FF';
 
     // Dibujar cuadro de detección
     ctx.strokeStyle = color;
-    ctx.lineWidth = isBest ? 4 : 2;
+    ctx.lineWidth = 3;
     ctx.strokeRect(x, y, width, height);
 
     // Dibujar etiqueta
@@ -288,31 +261,16 @@ function renderDetections(predictions) {
     ctx.font = '14px Arial';
     ctx.fillText(label, x + 5, y > 10 ? y - 5 : y + 15);
 
-    // Verificar INE_Frente con score > 0.7 dentro del área guía
-    if (labelName === 'INE_Frente' && pred.score > 0.7 && isBoxInsideGuide(x, y, width, height)) {
-      detectedINEFrente = true;
-    }
+    // Verificar INE_Frente con score > 0.7
+    if (labelName === 'INE_Frente' && pred.score > 0.58) {  // Threshold más bajo para QF16
+       detectedINEFrente = true;
+     }
   });
 
   if (detectedINEFrente) {
-    updateStatus("✅ INE_Frente detectada correctamente dentro del área. Cámara detenida.");
+    updateStatus("✅ INE_Frente detectada correctamente. Cámara detenida.");
     hideCam();
   }
-}
-
-// Verificar si está dentro del área guía
-function isBoxInsideGuide(x, y, width, height) {
-  const guideWidth = canvas.width * 0.6;
-  const guideHeight = canvas.height * 0.4;
-  const guideX = (canvas.width - guideWidth) / 2;
-  const guideY = (canvas.height - guideHeight) / 2;
-
-  return (
-    x >= guideX &&
-    y >= guideY &&
-    x + width <= guideX + guideWidth &&
-    y + height <= guideY + guideHeight
-  );
 }
 
 // 9. Ocultar cámara

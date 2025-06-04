@@ -1,0 +1,91 @@
+body,
+html {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: helvetica, arial, sans-serif;
+  color: #3d3d3d;
+  overflow: hidden;
+}
+
+h1 {
+  font-style: italic;
+  color: #ff6f00;
+}
+
+.content {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+}
+
+button {
+  width: 140px;
+  height: 60px;
+  margin: 1rem;
+  font-size: 18px;
+}
+
+select {
+  width: 180px;
+  height: 60px;
+  margin: 1rem;
+  font-size: 16px;
+}
+
+section {
+  height: 100%;
+  pointer-events: none;
+}
+
+.removed {
+  display: none;
+}
+
+.invisible {
+  opacity: 0.2;
+}
+
+.camView {
+  position: relative;
+  float: left;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.camView p {
+  position: fixed;
+  padding: 5px;
+  background-color: #a70635;
+  color: #fff;
+  border: 1px dashed rgba(255, 255, 255, 0.7);
+  z-index: 2;
+  font-size: 22px;
+}
+
+.highlighter {
+  background: rgba(21, 177, 0, 0.24);
+  border: 1px dashed #fff;
+  z-index: 1;
+  position: fixed;
+}
+
+.image-container {
+  display: none;
+  height: 100vh;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+.info {
+  width: 90vw;
+  height: auto;
+  font-size: 18px;
+  overflow: auto;
+}

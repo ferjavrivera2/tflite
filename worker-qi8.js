@@ -29,21 +29,20 @@ self.addEventListener('message', async (e) => {
   }
 });
 
-// Cargar modelo TFLite QF16
+// Cargar modelo TFLite
 async function loadModel(modelPath) {
   try {
     tflite.setWasmPath("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.8/dist/");
     
-    // Configuración específica para modelo QF16
     model = await tflite.loadTFLiteModel(modelPath, {
       experimentalNormalize: false,
-      inputType: 'uint8',      // Mantener uint8 para entrada
-      outputType: 'float32'    // Mantener float32 para salida
+      inputType: 'uint8',
+      outputType: 'float32'
     });
     
     postMessage({ 
       event: 'model-ready',
-      data: 'QF16 Model loaded successfully'
+      data: 'Model loaded successfully'
     });
   } catch (error) {
     postMessage({ 
@@ -57,19 +56,16 @@ async function loadModel(modelPath) {
 // Procesar frame y hacer predicción
 async function predictFrame(frameData, id) {
   try {
-    // 1. Convertir ImageData a tensor - mantener uint8 para QF16
+    // 1. Convertir ImageData a tensor
     const inputTensor = tf.tidy(() => {
       const tensor = tf.tensor3d(
         new Uint8Array(frameData.data), 
         [frameData.height, frameData.width, 4] // RGBA
       );
-      
-      // Para este modelo QF16: mantener uint8, solo extraer RGB
-      const rgbTensor = tensor.slice([0, 0, 0], [-1, -1, 3]); // Solo RGB
-      return rgbTensor.expandDims(0); // Batch dimension, mantener uint8
+      return tensor.slice([0, 0, 0], [-1, -1, 3]).expandDims(0); // RGB
     });
 
-    console.log("📤 Input tensor (QF16):", inputTensor.shape, inputTensor.dtype);
+    console.log("📤 Input tensor:", inputTensor.shape, inputTensor.dtype);
 
     // 2. Hacer predicción
     const outputTensors = await model.predict(inputTensor);
@@ -88,7 +84,7 @@ async function predictFrame(frameData, id) {
     const predictions = await processOutput(outputTensors);
     
     // 5. Debug: Mostrar detecciones crudas
-    console.log("Detecciones QF16:", predictions.length);
+    console.log("Detecciones:", predictions.length);
     predictions.forEach((det, i) => {
       console.log(`Detección ${i+1}:`);
       console.log(` Clase ID: ${det.class}`);
@@ -143,10 +139,10 @@ async function processOutput(outputTensors) {
     ]);
 
     // Debug: Mostrar datos crudos
-    console.log("Boxes raw (QF16):", boxesData);
-    console.log("Scores raw (QF16):", scoresData);
-    console.log("Classes raw (QF16):", classesData);
-    console.log("NumDetections (QF16):", numDetectionsData);
+    console.log("Boxes raw:", boxesData);
+    console.log("Scores raw:", scoresData);
+    console.log("Classes raw:", classesData);
+    console.log("NumDetections:", numDetectionsData);
 
     const predictions = [];
     const num = Math.min(numDetectionsData[0], 10); 
